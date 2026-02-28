@@ -1,10 +1,5 @@
 """
-REINFORCE for continuous-action Gymnasium environments (e.g. Swimmer-v5).
-
-Public API
-----------
-step(env, policy, optimizer, ...)  ->  (mean_return, domain_metrics)
-train_loop(...)                    ->  MetricsManager
+REINFORCE for Swimmer-v5 using AsyncVectorEnv for parallel episode collection.
 """
 
 from __future__ import annotations
@@ -18,181 +13,136 @@ import numpy as np
 import torch
 from torch import optim
 import gymnasium as gym
+from gymnasium.vector import AsyncVectorEnv
 
 from src.nn.nn_policy import ContinuousPolicy
 from src.utils.returns import compute_returns, normalise_returns_batch
 from src.utils.metrics import MetricsManager
 
 
-# ---------------------------------------------------------------------------
-# Internal: single episode rollout
-# ---------------------------------------------------------------------------
-
-def _collect_episode(
-    env: gym.Env,
+def _collect_batch(
+    envs: AsyncVectorEnv,
     policy: ContinuousPolicy,
     max_steps: int,
     device: torch.device,
-) -> tuple[list[torch.Tensor], list[float], dict[str, float]]:
+) -> tuple[list[list[torch.Tensor]], list[list[float]], list[float]]:
     """
-    Roll out one full episode.
+    Run all parallel envs for one episode each and collect experience.
+
+    Swimmer only ever truncates (at max_steps), never terminates early,
+    so x_position is simply read from infos at the start and end.
 
     Returns
     -------
-    log_probs      : scalar log-prob tensor per step
-    rewards        : float reward per step
-    domain_metrics : env-specific scalars, e.g. {"x_distance": ...}
+    all_log_probs : one list of tensors per env
+    all_rewards   : one list of floats per env
+    x_distances   : x displacement per env over the episode
     """
-    obs, info = env.reset()
-    x_start: float = float(info.get("x_position", 0.0))
+    n_envs = envs.num_envs
 
-    log_probs: list[torch.Tensor] = []
-    rewards:   list[float]        = []
+    obs, infos = envs.reset()
+    x_starts = np.array(infos["x_position"])
+
+    all_log_probs = [[] for _ in range(n_envs)]
+    all_rewards   = [[] for _ in range(n_envs)]
 
     for _ in range(max_steps):
-        obs_t  = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-        action = policy.sample_actions(obs_t)        # (1, action_dim)
-        lp     = policy.log_prob(obs_t, action)      # (1,)
-        log_probs.append(lp.squeeze())
+        obs_t  = torch.tensor(obs, dtype=torch.float32, device=device)
+        action = policy.sample_actions(obs_t)
+        lp     = policy.log_prob(obs_t, action)
 
-        obs, reward, terminated, truncated, info = env.step(
-            action.squeeze(0).detach().cpu().numpy()
+        obs, rewards, terminated, truncated, infos = envs.step(
+            action.detach().cpu().numpy()
         )
-        rewards.append(float(reward))
 
-        if terminated or truncated:
+        for i in range(n_envs):
+            all_log_probs[i].append(lp[i].squeeze())
+            all_rewards[i].append(float(rewards[i]))
+
+        if (terminated | truncated).all():
             break
 
-    x_end      = float(info.get("x_position", 0.0))
-    domain_metrics = {"x_distance": x_end - x_start}
+    x_distances = list(np.array(infos["x_position"]) - x_starts)
 
-    return log_probs, rewards, domain_metrics
+    return all_log_probs, all_rewards, x_distances
 
-
-# ---------------------------------------------------------------------------
-# step  (one batch of episodes + one gradient update)
-# ---------------------------------------------------------------------------
 
 def step(
-    env: gym.Env,
+    envs: AsyncVectorEnv,
     policy: ContinuousPolicy,
     optimizer: optim.Optimizer,
     *,
-    episodes_per_update: int,
     max_steps: int,
     gamma: float,
     normalise_returns: bool,
     device: torch.device,
-) -> tuple[float, dict[str, float]]:
+) -> tuple[float, float]:
     """
-    Collect one batch of episodes and perform one REINFORCE gradient update.
-
-    Parameters
-    ----------
-    env                 : Gymnasium environment instance.
-    policy              : ContinuousPolicy to act with and update.
-    optimizer           : Optimizer attached to policy parameters.
-    episodes_per_update : Episodes to collect before each gradient step.
-    max_steps           : Maximum timesteps per episode.
-    gamma               : Discount factor.
-    normalise_returns   : Standardise returns across the batch before loss.
-    device              : Torch device.
+    Collect one batch of parallel episodes and perform one gradient update.
 
     Returns
     -------
-    mean_return    : Mean undiscounted return across collected episodes.
-    domain_metrics : Dict of mean env-specific metrics, e.g. {"x_distance": …}.
+    mean_return    : mean total reward across episodes in the batch
+    mean_x_distance: mean x displacement across episodes in the batch
     """
-    batch_log_probs:     list[torch.Tensor]       = []
-    batch_returns:       list[torch.Tensor]       = []
-    episode_returns:     list[float]              = []
-    batch_domain:        list[dict[str, float]]   = []
+    all_log_probs, all_rewards, x_distances = _collect_batch(
+        envs, policy, max_steps, device
+    )
 
-    # ---- collect ----
-    for _ in range(episodes_per_update):
-        log_probs, rewards, ep_domain = _collect_episode(env, policy, max_steps, device)
+    # Build per-episode tensors for the loss
+    batch_log_probs = []
+    batch_returns   = []
+    episode_returns = []
 
-        if not rewards:
-            continue
-
+    for log_probs, rewards in zip(all_log_probs, all_rewards):
         returns = compute_returns(rewards, gamma)
-
         episode_returns.append(sum(rewards))
-        batch_domain.append(ep_domain)
         batch_log_probs.append(torch.stack(log_probs))
-        batch_returns.append(
-            torch.tensor(returns, dtype=torch.float32, device=device)
-        )
+        batch_returns.append(torch.tensor(returns, dtype=torch.float32, device=device))
 
-    # ---- optional return normalisation ----
     if normalise_returns:
         batch_returns = normalise_returns_batch(batch_returns)
 
-    # ---- REINFORCE loss:  -E[ Σ_t log π(a_t|s_t) · G_t ] ----
+    # REINFORCE loss: push up log-probs of actions that led to high returns
     loss = torch.tensor(0.0, device=device)
-    n = len(batch_log_probs)
     for lp, G in zip(batch_log_probs, batch_returns):
-        loss = loss + torch.sum(-lp * G) / n
+        loss = loss + torch.sum(-lp * G) / len(batch_log_probs)
 
-    # ---- gradient update ----
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
 
-    # ---- aggregate metrics ----
-    mean_return = float(np.mean(episode_returns)) if episode_returns else 0.0
+    return float(np.mean(episode_returns)), float(np.mean(x_distances))
 
-    # Average each domain metric key across the episode batch
-    all_keys = {k for d in batch_domain for k in d}
-    mean_domain: dict[str, float] = {
-        k: float(np.mean([d[k] for d in batch_domain if k in d]))
-        for k in all_keys
-    }
-
-    return mean_return, mean_domain
-
-
-# ---------------------------------------------------------------------------
-# train_loop
-# ---------------------------------------------------------------------------
 
 def train_loop(
-    # environment
     env_name:            str   = "Swimmer-v5",
-    # policy architecture
+    n_envs:              int   = 16,
     hidden_dim:          int   = 64,
     action_bound:        float = 1.0,
     covariance_scale:    float = 0.1,
-    # training
     gamma:               float = 0.99,
     lr:                  float = 3e-4,
     num_updates:         int   = 1000,
-    episodes_per_update: int   = 16,
     max_steps:           int   = 1000,
     normalise_returns:   bool  = True,
-    # checkpointing
     checkpoint_base_dir: str   = "checkpoints",
 ) -> MetricsManager:
     """
-    Full REINFORCE training loop.
-
-    Calls `step()` each update, records via MetricsManager (which owns
-    best-policy tracking), and persists everything via `mm.save()` at the
-    end — or on KeyboardInterrupt via a finally block.
-
-    Returns
-    -------
-    MetricsManager with the completed run's full history.
+    Full training loop. Runs `num_updates` gradient steps, each collecting
+    `n_envs` episodes in parallel. Saves results via MetricsManager at the end.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # ---- environment ----
-    env        = gym.make(env_name)
-    state_dim  = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
+    envs = AsyncVectorEnv([
+        (lambda: gym.make(env_name))
+        for _ in range(n_envs)
+    ])
 
-    # ---- policy ----
-    covariance = (covariance_scale * torch.eye(action_dim, dtype=torch.float32)).to(device)
+    state_dim  = envs.single_observation_space.shape[0]
+    action_dim = envs.single_action_space.shape[0]
+
+    covariance = covariance_scale * torch.eye(action_dim, dtype=torch.float32, device=device)
     policy = ContinuousPolicy(
         state_dim=state_dim,
         action_dim=action_dim,
@@ -203,109 +153,76 @@ def train_loop(
 
     optimizer = optim.Adam(policy.parameters(), lr=lr)
 
-    # ---- run directory ----
-    run_id  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = os.path.join(checkpoint_base_dir, f"run_{run_id}")
+    run_dir = os.path.join(checkpoint_base_dir, f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
-    # ---- hyperparams dict (everything non-network) ----
     hyperparams: dict[str, Any] = {
-        "env_name":            env_name,
-        "gamma":               gamma,
-        "lr":                  lr,
-        "num_updates":         num_updates,
-        "episodes_per_update": episodes_per_update,
-        "max_steps":           max_steps,
-        "normalise_returns":   normalise_returns,
-        "hidden_dim":          hidden_dim,
-        "action_bound":        action_bound,
-        "covariance_scale":    covariance_scale,
-        "checkpoint_base_dir": checkpoint_base_dir,
-        "run_dir":             run_dir,
-        "device":              device.type,
+        "env_name": env_name, "n_envs": n_envs,
+        "hidden_dim": hidden_dim, "action_bound": action_bound,
+        "covariance_scale": covariance_scale, "gamma": gamma,
+        "lr": lr, "num_updates": num_updates, "max_steps": max_steps,
+        "normalise_returns": normalise_returns,
+        "checkpoint_base_dir": checkpoint_base_dir, "run_dir": run_dir,
+        "device": device.type,
     }
 
     mm = MetricsManager()
 
-    print(f"Device      : {device}")
-    print(f"Environment : {env_name}  |  state_dim={state_dim}  action_dim={action_dim}")
-    print(f"Updates     : {num_updates}  |  episodes/update={episodes_per_update}")
-    print(f"Run dir     : {run_dir}")
+    print(f"Device        : {device}")
+    print(f"Environment   : {env_name}  (state_dim={state_dim}, action_dim={action_dim})")
+    print(f"Parallel envs : {n_envs}")
+    print(f"Updates       : {num_updates}")
+    print(f"Run dir       : {run_dir}")
     print()
 
     try:
         for update_idx in range(1, num_updates + 1):
             t0 = time.time()
 
-            mean_return, domain_metrics = step(
-                env, policy, optimizer,
-                episodes_per_update=episodes_per_update,
+            mean_return, mean_x_dist = step(
+                envs, policy, optimizer,
                 max_steps=max_steps,
                 gamma=gamma,
                 normalise_returns=normalise_returns,
                 device=device,
             )
 
-            # MetricsManager owns best-policy snapshot tracking
-            mm.record(mean_return, policy, domain_metrics)
+            mm.record(mean_return, mean_x_dist, policy)
 
             new_best = "  *** NEW BEST ***" if mean_return >= mm.best_mean_return else ""
-
-            domain_str = "  ".join(
-                f"{k} {v:.3f}" for k, v in domain_metrics.items()
-            )
             print(
                 f"Update {update_idx:4d} | "
                 f"MeanReturn {mean_return:+.3f} | "
-                f"{domain_str} | "
+                f"MeanXDist {mean_x_dist:.3f} | "
                 f"Time {time.time() - t0:.2f}s"
                 f"{new_best}"
             )
 
     except KeyboardInterrupt:
-        print("\n" + "=" * 60)
-        print("Training interrupted by user (Ctrl+C)")
-        print("=" * 60)
+        print("\nTraining interrupted.")
 
     finally:
-        env.close()
+        try:
+            envs.close()
+        except BaseException:
+            pass  # workers are already dead on Windows Ctrl+C, ignore
         mm.save(run_dir, hyperparams, policy)
 
     return mm
 
 
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     import argparse
     import yaml
 
-    parser = argparse.ArgumentParser(
-        description="Train REINFORCE on a Gymnasium environment."
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", type=str, default=None,
-                        help="Path to YAML config file")
+                        help="Optional YAML config file to override defaults")
     args = parser.parse_args()
 
-    cfg: dict = {}
+    # Start with defaults; override with anything found in the config file
+    cfg = {}
     if args.config:
-        with open(args.config, "r") as f:
+        with open(args.config) as f:
             cfg = yaml.safe_load(f) or {}
 
-    env_cfg    = cfg.get("env",    {})
-    policy_cfg = cfg.get("policy", {})
-
-    train_loop(
-        env_name            = env_cfg.get("env_name",            "Swimmer-v5"),
-        hidden_dim          = policy_cfg.get("hidden_dim",       64),
-        action_bound        = policy_cfg.get("action_bound",     1.0),
-        covariance_scale    = policy_cfg.get("covariance_scale", 0.1),
-        gamma               = cfg.get("gamma",               0.99),
-        lr                  = cfg.get("lr",                  3e-4),
-        num_updates         = cfg.get("num_updates",         1000),
-        episodes_per_update = cfg.get("episodes_per_update", 16),
-        max_steps           = cfg.get("max_steps",           1000),
-        normalise_returns   = cfg.get("normalise_returns",   True),
-        checkpoint_base_dir = cfg.get("checkpoint_base_dir", "checkpoints"),
-    )
+    train_loop(**cfg)

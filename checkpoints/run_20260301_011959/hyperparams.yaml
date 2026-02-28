@@ -1,0 +1,20 @@
+hyperparams:
+  env_name: Swimmer-v5
+  n_envs: 16
+  hidden_dim: 64
+  action_bound: 1.0
+  covariance_scale: 0.1
+  gamma: 0.99
+  lr: 0.0003
+  num_updates: 1000
+  max_steps: 1000
+  normalise_returns: true
+  checkpoint_base_dir: checkpoints
+  run_dir: checkpoints\run_20260301_011959
+  device: cpu
+summary:
+  num_updates_completed: 16
+  best_mean_return: -4.371464208170462
+  final_mean_return: -4.371464208170462
+  best_x_distance: -0.1738617784940749
+  final_x_distance: -0.1738617784940749
