@@ -86,9 +86,9 @@ def main():
 
     if args.checkpoint is not None:
         # Replace with your actual policy class import
-        from your_project.policy import Policy
+        from src.nn.nn_policy import ContinuousPolicy
 
-        policy = Policy.load(args.checkpoint)
+        policy = ContinuousPolicy.load(args.checkpoint)
         policy.eval()
         print(f"Loaded policy from: {args.checkpoint}")
     # ---------------------------------
