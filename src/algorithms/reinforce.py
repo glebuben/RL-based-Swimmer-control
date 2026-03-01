@@ -34,8 +34,8 @@ def _collect_batch(
 
     Returns
     -------
-    all_log_probs : one list of tensors per env
-    all_rewards   : one list of floats per env
+    all_log_probs : list of n_env lists of max_steps scalar tensors
+    all_rewards   : list of n_env lists of max_steps floats
     x_distances   : x displacement per env over the episode
     """
     n_envs = envs.num_envs
@@ -117,7 +117,7 @@ def step(
 
 def train_loop(
     env_name:            str   = "Swimmer-v5",
-    n_envs:              int   = 16,
+    batch_size:          int   = 16,
     hidden_dim:          int   = 64,
     action_bound:        float = 1.0,
     covariance_scale:    float = 0.1,
@@ -136,7 +136,7 @@ def train_loop(
 
     envs = AsyncVectorEnv([
         (lambda: gym.make(env_name))
-        for _ in range(n_envs)
+        for _ in range(batch_size)
     ])
 
     state_dim  = envs.single_observation_space.shape[0]
@@ -156,7 +156,7 @@ def train_loop(
     run_dir = os.path.join(checkpoint_base_dir, f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
     hyperparams: dict[str, Any] = {
-        "env_name": env_name, "n_envs": n_envs,
+        "env_name": env_name, "batch_size": batch_size,
         "hidden_dim": hidden_dim, "action_bound": action_bound,
         "covariance_scale": covariance_scale, "gamma": gamma,
         "lr": lr, "num_updates": num_updates, "max_steps": max_steps,
@@ -169,7 +169,7 @@ def train_loop(
 
     print(f"Device        : {device}")
     print(f"Environment   : {env_name}  (state_dim={state_dim}, action_dim={action_dim})")
-    print(f"Parallel envs : {n_envs}")
+    print(f"Parallel envs : {batch_size}")
     print(f"Updates       : {num_updates}")
     print(f"Run dir       : {run_dir}")
     print()

@@ -28,9 +28,20 @@ class ContinuousPolicy(nn.Module):
         dist = self._get_distribution(state_batch)
         return dist.log_prob(action_batch)
 
+    def prob(self, state_batch, action_batch):
+        return torch.exp(self.log_prob(state_batch, action_batch))
+
     def sample_actions(self, state_batch):
         dist = self._get_distribution(state_batch)
         return dist.sample()
+
+    def add_weights(self, weights_diff):
+
+        idx = 0
+        for p in self.parameters():
+            numel = p.numel()
+            p.data += weights_diff[idx : idx + numel].view_as(p)
+            idx += numel
 
     def save(self, path):
         dict_to_save = {
