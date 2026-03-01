@@ -1,0 +1,9 @@
+batch_size:          32
+hidden_dim:          64
+action_bound:        1.0
+covariance_scale:    0.25
+gamma:               0.99
+lr:                  3.0e-4
+num_updates:         1000
+max_steps:           1000
+normalise_returns:   true
