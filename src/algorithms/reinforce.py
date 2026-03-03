@@ -18,7 +18,8 @@ from gymnasium.vector import AsyncVectorEnv
 from src.nn.nn_policy import ContinuousPolicy
 from src.utils.returns import compute_returns, normalise_returns_batch
 from src.utils.metrics import MetricsManager
-
+from src.baselines.base import Baseline
+from src.baselines import make_baseline
 
 def _collect_batch(
     envs: AsyncVectorEnv,
@@ -34,8 +35,8 @@ def _collect_batch(
 
     Returns
     -------
-    all_log_probs : list of n_env lists of max_steps scalar tensors
-    all_rewards   : list of n_env lists of max_steps floats
+    all_log_probs : one list of tensors per env
+    all_rewards   : one list of floats per env
     x_distances   : x displacement per env over the episode
     """
     n_envs = envs.num_envs
@@ -75,6 +76,7 @@ def step(
     max_steps: int,
     gamma: float,
     normalise_returns: bool,
+    baseline: Baseline | None,
     device: torch.device,
 ) -> tuple[float, float]:
     """
@@ -100,10 +102,21 @@ def step(
         batch_log_probs.append(torch.stack(log_probs))
         batch_returns.append(torch.tensor(returns, dtype=torch.float32, device=device))
 
+    batch_mean_return = float(np.mean(episode_returns))
+    if baseline is not None:
+        baseline.update(batch_mean_return)
+        b = baseline.get()
+    else:
+        b = 0.0
+
+    # Subtract baseline from raw returns BEFORE normalisation
+    if baseline is not None:
+        batch_returns = [G - b for G in batch_returns]
+
     if normalise_returns:
         batch_returns = normalise_returns_batch(batch_returns)
 
-    # REINFORCE loss: push up log-probs of actions that led to high returns
+    # REINFORCE loss
     loss = torch.tensor(0.0, device=device)
     for lp, G in zip(batch_log_probs, batch_returns):
         loss = loss + torch.sum(-lp * G) / len(batch_log_probs)
@@ -117,7 +130,7 @@ def step(
 
 def train_loop(
     env_name:            str   = "Swimmer-v5",
-    batch_size:          int   = 16,
+    n_envs:              int   = 16,
     hidden_dim:          int   = 64,
     action_bound:        float = 1.0,
     covariance_scale:    float = 0.1,
@@ -126,6 +139,7 @@ def train_loop(
     num_updates:         int   = 1000,
     max_steps:           int   = 1000,
     normalise_returns:   bool  = True,
+    baseline_name: str | None = None,
     checkpoint_base_dir: str   = "checkpoints",
 ) -> MetricsManager:
     """
@@ -136,7 +150,7 @@ def train_loop(
 
     envs = AsyncVectorEnv([
         (lambda: gym.make(env_name))
-        for _ in range(batch_size)
+        for _ in range(n_envs)
     ])
 
     state_dim  = envs.single_observation_space.shape[0]
@@ -156,20 +170,23 @@ def train_loop(
     run_dir = os.path.join(checkpoint_base_dir, f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
     hyperparams: dict[str, Any] = {
-        "env_name": env_name, "batch_size": batch_size,
+        "env_name": env_name, "n_envs": n_envs,
         "hidden_dim": hidden_dim, "action_bound": action_bound,
         "covariance_scale": covariance_scale, "gamma": gamma,
         "lr": lr, "num_updates": num_updates, "max_steps": max_steps,
         "normalise_returns": normalise_returns,
         "checkpoint_base_dir": checkpoint_base_dir, "run_dir": run_dir,
         "device": device.type,
+        "baseline_name": baseline_name,
     }
+    
+    baseline = make_baseline(baseline_name)
 
     mm = MetricsManager()
 
     print(f"Device        : {device}")
     print(f"Environment   : {env_name}  (state_dim={state_dim}, action_dim={action_dim})")
-    print(f"Parallel envs : {batch_size}")
+    print(f"Parallel envs : {n_envs}")
     print(f"Updates       : {num_updates}")
     print(f"Run dir       : {run_dir}")
     print()
@@ -183,6 +200,7 @@ def train_loop(
                 max_steps=max_steps,
                 gamma=gamma,
                 normalise_returns=normalise_returns,
+                baseline=baseline, 
                 device=device,
             )
 
