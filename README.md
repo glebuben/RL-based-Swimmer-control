@@ -141,6 +141,43 @@ This reduces variance in the surrogate objective gradient while remaining unbias
 
 ---
 
+## Hyperparameters
+
+### Shared Parameters
+
+Both algorithms share the following parameters with identical values:
+
+| Parameter | Value | Description |
+|---|---|---|
+| `batch_size` | 32 | Number of parallel episodes collected per update |
+| `hidden_dim` | 64 | Number of units in the policy network hidden layer |
+| `action_bound` | 1.0 | Tanh output is scaled by this value, bounding actions to $[-1, 1]^2$ |
+| `covariance_scale` | 0.25 | Diagonal value of the fixed Gaussian covariance matrix $\Sigma = \sigma^2 I$, controls exploration |
+| `gamma` | 0.999 | Discount factor; close to 1 to preserve long-horizon reward signal in 1000-step episodes |
+| `num_updates` | 1000 | Total number of gradient updates |
+| `max_steps` | 1000 | Maximum timesteps per episode (Swimmer truncates here, never terminates early) |
+| `normalise_returns` | true | Standardise returns to zero mean and unit variance across the batch before computing the loss |
+
+### REINFORCE-specific Parameters
+
+| Parameter | Value | Description |
+|---|---|---|
+| `lr` | 3e-4 | Adam learning rate |
+| `baseline_name` | `"Exponential_0.05"` (optional) | Exponential moving average baseline with $\alpha = 0.05$; omitted for the no-baseline variant |
+
+### TRPO-specific Parameters
+
+| Parameter | Value | Description |
+|---|---|---|
+| `delta_kl` | 0.01 | Maximum allowed KL divergence $\delta$ between old and new policy per update |
+| `max_CG_iters` | 10 | Maximum iterations of the conjugate gradient solver when computing $F^{-1}g$ |
+| `kl_subsample` | 0.1 | Fraction of collected state transitions used to estimate the Fisher information matrix; reduces memory and compute cost |
+| `line_search_step_multiplier` | 0.5 | Factor by which the step size is shrunk at each backtracking line search iteration |
+| `advantage_name` | `"QBaseline_Exponential_0.05"` | Advantage estimator: $A_t = G_t - b$ where $b$ is an exponential moving average baseline with $\alpha = 0.05$ |
+
+
+---
+
 ## Results and Conclusions
 
 > _Graphs and quantitative comparison to be added here._
