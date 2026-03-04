@@ -93,6 +93,7 @@ def compute_surrogate_objective(
         clipped_lr = torch.clamp(lh_ratios, 1 - eps, 1 + eps)
         clipped_product = torch.minimum(clipped_lr * advantages, lh_ratios * advantages)
         surrogate = surrogate + clipped_product.mean() / len(batch_advantages)
+        
     return surrogate
 
 
@@ -117,6 +118,10 @@ def step(
     mean_return    : mean total reward across episodes in the batch
     mean_x_distance: mean x displacement across episodes in the batch
     """
+
+    with torch.no_grad():
+        old_policy.load_state_dict(target_policy.state_dict())
+
     all_lh_ratios, all_rewards, all_states, x_distances = _collect_batch(
         envs, target_policy, old_policy, max_steps, device
     )
@@ -142,7 +147,8 @@ def step(
     )
 
     optimizer.zero_grad()
-    surrogate_objective.backward()
+    loss = -surrogate_objective
+    loss.backward()
     optimizer.step()
 
     return float(np.mean(episode_returns)), float(np.mean(x_distances))

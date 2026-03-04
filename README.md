@@ -23,6 +23,7 @@ src/
 ├── algorithms/
 │   ├── reinforce.py        # REINFORCE training loop with optional baseline support
 │   ├── trpo.py             # TRPO training loop with pluggable advantage estimators
+│   ├── ppo.py              # PPO training loop with pluggable advantage estimators
 │   ├── conjugate_gradient.py  # Conjugate gradient solver for the Fisher-vector product system
 │   └── kl_divergence.py    # Fisher information matrix operator for KL constraint
 │
@@ -123,24 +124,32 @@ $$\theta \leftarrow \theta + \sqrt{\frac{2\delta}{s^\top F s}} \cdot s, \qquad s
 
 where $F$ is the Fisher information matrix. Since $F$ is too large to invert directly, we use the **conjugate gradient** method to compute $F^{-1}g$ via Fisher-vector products, followed by a **backtracking line search** to satisfy the KL constraint.
 
-#### TRPO with Q-value Advantage
 
-The advantage is estimated as the raw discounted return:
+#### TRPO with Q-value Estimate (original paper approach)
 
-$$A(s_t, a_t) = G_t = \sum_{k=t}^{T} \gamma^{k-t} r_k$$
+Following the original TRPO paper, we use the discounted return $G_t$ as a Monte Carlo estimate of the action-value function $Q^\pi(s_t, a_t)$:
 
-This is an estimate of the action-value function $Q^{\pi}(s_t, a_t)$ under the current policy.
+$$\mathbb{E}[Q^\pi(s_t, a_t)] = \mathbb{E}\left[\sum_{k=t}^{T} \gamma^{k-t} r_k\right] = G_t$$
 
-#### TRPO with Baseline Advantage
+The surrogate objective therefore becomes:
 
-The advantage is estimated as $Q - V$, where $V$ is approximated by the same exponential moving average baseline described above:
+$$\mathcal{L}(\theta) = \mathbb{E}_{s, a \sim \pi_{\theta_{\text{old}}}} \left[ \frac{\pi_\theta(a|s)}{\pi_{\theta_{\text{old}}}(a|s)} \cdot G_t \right]$$
+
+This is an unbiased estimate of the true objective but can exhibit high variance since raw returns fluctuate significantly across episodes.
+
+#### TRPO with Advantage Estimate ($Q - V$)
+
+The advantage function is defined as $A^\pi(s_t, a_t) = Q^\pi(s_t, a_t) - V^\pi(s_t)$. We estimate it as:
 
 $$A(s_t, a_t) = G_t - b$$
 
-This reduces variance in the surrogate objective gradient while remaining unbiased, similar to the REINFORCE with baseline case.
+where $G_t$ is the Monte Carlo estimate of $Q^\pi$ and $b$ is an exponential moving average of batch mean returns used as an estimate of $V^\pi$:
+
+$$b_{k+1} = (1 - \alpha)\, b_k + \alpha\, \mathbb{E}_{\tau_k}[G_0]$$
 
 ---
 
+<<<<<<< HEAD
 ## Hyperparameters
 
 ### Shared Parameters
@@ -175,6 +184,19 @@ Both algorithms share the following parameters with identical values:
 | `line_search_step_multiplier` | 0.5 | Factor by which the step size is shrunk at each backtracking line search iteration |
 | `advantage_name` | `"QBaseline_Exponential_0.05"` | Advantage estimator: $A_t = G_t - b$ where $b$ is an exponential moving average baseline with $\alpha = 0.05$ |
 
+=======
+### PPO 
+
+Proximal Policy Optimisation is a more practical variant of TRPO that replaces the hard KL constraint with a clipped surrogate objective. The update maximises:
+
+$$\mathcal{L}^{\text{CLIP}}(\theta) = \mathbb{E}_{s, a \sim \pi_{\theta_{\text{old}}}} \left[ \min \left( r_t(\theta) A(s, a), \; \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) A(s, a) \right) \right]$$
+
+where $r_t(\theta) = \frac{\pi_\theta(a|s)}{\pi_{\theta_{\text{old}}}(a|s)}$ is the probability ratio. The clipping prevents updates that would change the policy too much in one step, while still allowing multiple epochs of minibatch updates on the same data. 
+
+While original paper proposes using a value function approximation, we use only returns-based estimates of value function. 
+
+Also, for simplicity, we perform only one gradient update per batch of data, rather than multiple epochs of minibatch updates.
+>>>>>>> d73d431a4bddf97276892dfb409c7f4f9444debe
 
 ---
 
