@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
+from src.utils.returns import compute_returns
 
 class Advantage(ABC):
 
@@ -59,14 +60,16 @@ class Advantage(ABC):
         batch_advantages : list[n_envs] of (T,) advantage tensors
         episode_returns  : list[n_envs] of scalar undiscounted returns
         """
+        batch_returns   = [torch.tensor(compute_returns(rewards, gamma), dtype=torch.float32, device=device) for rewards in all_rewards]
         episode_returns = [sum(rewards) for rewards in all_rewards]
 
-        # Update internal state (e.g. baseline) using this batch before computing
-        self.update(episode_returns)
 
         batch_advantages = [
             self.compute(rewards, all_states[i], gamma, device)
             for i, rewards in enumerate(all_rewards)
         ]
+
+        # Update internal state (e.g. baseline) using this batch before computing
+        self.update(batch_returns)
 
         return batch_advantages, episode_returns

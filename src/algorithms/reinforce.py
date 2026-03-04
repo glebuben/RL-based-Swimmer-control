@@ -134,7 +134,7 @@ def train_loop(
     num_updates:         int   = 1000,
     max_steps:           int   = 1000,
     normalise_returns:   bool  = True,
-    baseline_name: str | None = "Exponential_0.1",
+    baseline_name: str | None = None,
     checkpoint_base_dir: str   = "checkpoints",
 ) -> MetricsManager:
     """

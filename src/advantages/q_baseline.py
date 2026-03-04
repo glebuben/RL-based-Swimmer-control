@@ -24,10 +24,9 @@ class QBaselineAdvantage(Advantage):
     def __init__(self, baseline: Baseline) -> None:
         self._baseline = baseline
 
-    def update(self, episode_returns: list[float]) -> None:
+    def update(self, batch_returns: list[torch.Tensor]) -> None:
         """Update the baseline with the batch mean return."""
-        batch_mean = sum(episode_returns) / len(episode_returns)
-        self._baseline.update(batch_mean)
+        self._baseline.update(batch_returns)
 
     def compute(
         self,

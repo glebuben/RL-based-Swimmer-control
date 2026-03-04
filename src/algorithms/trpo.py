@@ -98,7 +98,12 @@ def compute_surrogate_objective(
     batch_likelihood_ratios: list[torch.Tensor],
     batch_advantages: list[torch.Tensor],
 ) -> torch.Tensor:
-    """Compute mean surrogate objective: E[ ratio * advantage ]."""
+    """Compute surrogate objective
+
+    Inputs:
+    batch_likelihood_ratios: list of n_env lists of max_steps scalar tensors
+    batch_advantages: list of n_env lists of max_steps scalar tensors
+    """
     surrogate = torch.tensor(0.0, device=batch_advantages[0].device)
     for lh_ratios, advantages in zip(batch_likelihood_ratios, batch_advantages):
         surrogate = surrogate + (lh_ratios * advantages).mean() / len(batch_advantages)
@@ -167,7 +172,7 @@ def step(
     device: torch.device,
 ) -> tuple[float, float]:
     """
-    Collect one batch of parallel episodes and perform one TRPO update.
+    Collect one batch of parallel episodes and perform one gradient update.
 
     Returns
     -------
@@ -181,11 +186,12 @@ def step(
         envs, target_policy, old_policy, max_steps, device
     )
 
+    batch_likelihood_ratios = []
     batch_likelihood_ratios = [
         torch.stack(lh_ratios) for lh_ratios in all_lh_ratios
     ]
 
-    # compute_batch handles baseline.update() internally before computing per-episode advantages
+    # compute_batch handles baseline.update() internally after computing per-episode advantages
     batch_advantages, episode_returns = advantage.compute_batch(
         all_rewards=all_rewards,
         all_states=all_states,
@@ -205,14 +211,17 @@ def step(
     obj_grad = torch.autograd.grad(surrogate_objective, target_policy.parameters())
     obj_grad = torch.cat([g.view(-1) for g in obj_grad]).detach()
 
-    fisher_info_op   = FisherInfoOperator(target_policy, old_policy, all_states_subsampled)
-    step_direction   = solve_CG(fisher_info_op, obj_grad, max_iters=max_CG_iters)
-    step_dir_flat    = torch.cat([s.view(-1) for s in step_direction])
-
-    fim_dot_dir      = fisher_info_op(step_dir_flat)
-    step_size        = torch.sqrt(
-        2 * delta_kl / (fim_dot_dir.dot(step_dir_flat) + 1e-8)
+    # Compute the step direction using the conjugate gradient method
+    fisher_info_op = FisherInfoOperator(
+        target_policy, old_policy, all_states_subsampled
     )
+    step_direction = solve_CG(fisher_info_op, obj_grad, max_iters=max_CG_iters)
+    step_direction_flat = torch.cat([s.view(-1) for s in step_direction])
+
+    FIM_by_step_direction = fisher_info_op(step_direction_flat)
+
+    step_size = torch.sqrt(
+        2 * delta_kl / (FIM_by_step_direction.dot(step_direction_flat) + 1e-8))
 
     kl_line_search(
         step_direction=step_direction,
@@ -243,16 +252,12 @@ def train_loop(
     num_updates:                 int   = 1000,
     max_steps:                   int   = 1000,
     normalise_returns:           bool  = True,
-    advantage_name:              str   = "QValue",
+    advantage_name:              str   = "QBaseline_Exponential_0.1",
     checkpoint_base_dir:         str   = "checkpoints",
 ) -> MetricsManager:
     """
-    Full TRPO training loop.
-
-    Parameters
-    ----------
-    advantage_name : descriptor string passed to make_advantage().
-                     Examples: "QValue", "QBaseline_Exponential_0.1"
+    Full training loop. Runs `num_updates` gradient steps, each collecting
+    `batch_size` episodes in parallel. Saves results via MetricsManager at the end.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -263,16 +268,24 @@ def train_loop(
     state_dim  = envs.single_observation_space.shape[0]
     action_dim = envs.single_action_space.shape[0]
 
-    covariance = covariance_scale * torch.eye(action_dim, dtype=torch.float32, device=device)
+    covariance = covariance_scale * torch.eye(
+        action_dim, dtype=torch.float32, device=device
+    )
 
     target_policy = ContinuousPolicy(
-        state_dim=state_dim, action_dim=action_dim,
-        action_bound=action_bound, covariance=covariance, hidden_dim=hidden_dim,
+        state_dim=state_dim,
+        action_dim=action_dim,
+        action_bound=action_bound,
+        covariance=covariance,
+        hidden_dim=hidden_dim,
     ).to(device)
 
     old_policy = ContinuousPolicy(
-        state_dim=state_dim, action_dim=action_dim,
-        action_bound=action_bound, covariance=covariance, hidden_dim=hidden_dim,
+        state_dim=state_dim,
+        action_dim=action_dim,
+        action_bound=action_bound,
+        covariance=covariance,
+        hidden_dim=hidden_dim,
     ).to(device)
 
     advantage = make_advantage(advantage_name)
@@ -284,17 +297,23 @@ def train_loop(
     )
 
     hyperparams: dict[str, Any] = {
-        "env_name": env_name, "batch_size": batch_size,
-        "hidden_dim": hidden_dim, "action_bound": action_bound,
-        "covariance_scale": covariance_scale, "gamma": gamma,
+        "env_name": env_name,
+        "batch_size": batch_size,
+        "hidden_dim": hidden_dim,
+        "action_bound": action_bound,
+        "covariance_scale": covariance_scale, 
+        "gamma": gamma,
         "delta_kl": delta_kl,
         "line_search_step_multiplier": line_search_step_multiplier,
-        "kl_subsample": kl_subsample, "max_CG_iters": max_CG_iters,
-        "num_updates": num_updates, "max_steps": max_steps,
+        "kl_subsample": kl_subsample, 
+        "max_CG_iters": max_CG_iters,
+        "num_updates": num_updates, 
+        "max_steps": max_steps,
         "normalise_returns": normalise_returns,
         "advantage_name": advantage_name,
         "checkpoint_base_dir": checkpoint_base_dir,
-        "run_dir": run_dir, "device": device.type,
+        "run_dir": run_dir, 
+        "device": device.type,
     }
 
     mm = MetricsManager()
@@ -312,7 +331,11 @@ def train_loop(
             t0 = time.time()
 
             mean_return, mean_x_dist = step(
-                envs, target_policy, old_policy, delta_kl, advantage,
+                envs, 
+                target_policy, 
+                old_policy, 
+                delta_kl, 
+                advantage,
                 max_steps=max_steps,
                 gamma=gamma,
                 normalise_returns=normalise_returns,
