@@ -149,6 +149,20 @@ $$b_{k+1} = (1 - \alpha)\, b_k + \alpha\, \mathbb{E}_{\tau_k}[G_0]$$
 
 ---
 
+### PPO 
+
+Proximal Policy Optimisation is a more practical variant of TRPO that replaces the hard KL constraint with a clipped surrogate objective. The update maximises:
+
+$$\mathcal{L}^{\text{CLIP}}(\theta) = \mathbb{E}_{s, a \sim \pi_{\theta_{\text{old}}}} \left[ \min \left( r_t(\theta) A(s, a), \; \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) A(s, a) \right) \right]$$
+
+where $r_t(\theta) = \frac{\pi_\theta(a|s)}{\pi_{\theta_{\text{old}}}(a|s)}$ is the probability ratio. The clipping prevents updates that would change the policy too much in one step, while still allowing multiple epochs of minibatch updates on the same data. 
+
+While original paper proposes using a value function approximation, we use only returns-based estimates of value function. 
+
+Also, for simplicity, we perform only one gradient update per batch of data, rather than multiple epochs of minibatch updates.
+
+---
+
 ## Hyperparameters
 
 ### Shared Parameters
@@ -182,19 +196,6 @@ Both algorithms share the following parameters with identical values:
 | `kl_subsample` | 0.1 | Fraction of collected state transitions used to estimate the Fisher information matrix; reduces memory and compute cost |
 | `line_search_step_multiplier` | 0.5 | Factor by which the step size is shrunk at each backtracking line search iteration |
 | `advantage_name` | `"QBaseline_Exponential_0.05"` | Advantage estimator: $A_t = G_t - b$ where $b$ is an exponential moving average baseline with $\alpha = 0.05$ |
-
-=======
-### PPO 
-
-Proximal Policy Optimisation is a more practical variant of TRPO that replaces the hard KL constraint with a clipped surrogate objective. The update maximises:
-
-$$\mathcal{L}^{\text{CLIP}}(\theta) = \mathbb{E}_{s, a \sim \pi_{\theta_{\text{old}}}} \left[ \min \left( r_t(\theta) A(s, a), \; \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) A(s, a) \right) \right]$$
-
-where $r_t(\theta) = \frac{\pi_\theta(a|s)}{\pi_{\theta_{\text{old}}}(a|s)}$ is the probability ratio. The clipping prevents updates that would change the policy too much in one step, while still allowing multiple epochs of minibatch updates on the same data. 
-
-While original paper proposes using a value function approximation, we use only returns-based estimates of value function. 
-
-Also, for simplicity, we perform only one gradient update per batch of data, rather than multiple epochs of minibatch updates.
 
 ---
 
