@@ -252,7 +252,7 @@ def train_loop(
     num_updates:                 int   = 1000,
     max_steps:                   int   = 1000,
     normalise_returns:           bool  = True,
-    advantage_name:              str   = "QBaseline_Exponential_0.1",
+    advantage_name:              str   = "QValue",
     checkpoint_base_dir:         str   = "checkpoints",
 ) -> MetricsManager:
     """
