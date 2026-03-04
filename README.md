@@ -206,3 +206,7 @@ Both algorithms share the following parameters with identical values:
 ![2 text](artifacts/photo_2026-03-04_22-44-57.jpg)
 
 Both algorithms are trained with 16 parallel environments (`AsyncVectorEnv`) for sample efficiency, with return normalisation enabled. Metrics tracked per update are mean episode return and mean x-displacement.
+
+## Prompts
+
+[link to prompts used](https://drive.google.com/drive/folders/1vRaMqep8KoPFmSn-GoZBwHTVXBJnEas_?usp=sharing)
