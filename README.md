@@ -149,7 +149,6 @@ $$b_{k+1} = (1 - \alpha)\, b_k + \alpha\, \mathbb{E}_{\tau_k}[G_0]$$
 
 ---
 
-<<<<<<< HEAD
 ## Hyperparameters
 
 ### Shared Parameters
@@ -196,7 +195,6 @@ where $r_t(\theta) = \frac{\pi_\theta(a|s)}{\pi_{\theta_{\text{old}}}(a|s)}$ is 
 While original paper proposes using a value function approximation, we use only returns-based estimates of value function. 
 
 Also, for simplicity, we perform only one gradient update per batch of data, rather than multiple epochs of minibatch updates.
->>>>>>> d73d431a4bddf97276892dfb409c7f4f9444debe
 
 ---
 
