@@ -9,21 +9,26 @@ import imageio
 CAM_DISTANCE = 8.0
 CAM_AZIMUTH = 90
 CAM_ELEVATION = -20
-CAM_LOOKAT = [0.0, 0.0, 0.0]
+CAM_LOOKAT = [1.0, 0.0, 0.0]
 CAM_TRACK_BODY = -1
+CAM_ID = -1
 # ===============================
 
 
-def setup_fixed_camera(env):
-    """Apply fixed camera settings to MuJoCo viewer."""
-    viewer = env.unwrapped.mujoco_renderer.viewer
-    cam = viewer.cam
+def fix_offscreen_camera(env):
+    renderer = env.unwrapped.mujoco_renderer
 
-    cam.trackbodyid = CAM_TRACK_BODY
-    cam.distance = CAM_DISTANCE
-    cam.azimuth = CAM_AZIMUTH
-    cam.elevation = CAM_ELEVATION
-    cam.lookat[:] = CAM_LOOKAT
+    # Use free camera instead of model tracking camera
+    renderer.camera_id = CAM_ID
+
+    # Configure free camera
+    renderer.default_cam_config = {
+        "trackbodyid": CAM_TRACK_BODY,
+        "distance": CAM_DISTANCE,
+        "azimuth": CAM_AZIMUTH,
+        "elevation": CAM_ELEVATION,
+        "lookat": CAM_LOOKAT,
+    }
 
 
 def run_episode(env_name="Swimmer-v5", policy=None, max_steps=1000, gif_path=None):
@@ -32,14 +37,17 @@ def run_episode(env_name="Swimmer-v5", policy=None, max_steps=1000, gif_path=Non
     env = gym.make(env_name, render_mode="rgb_array")
     obs, info = env.reset()
 
+    fix_offscreen_camera(env)
+
     # Ensure viewer is initialized
     frame = env.render()
-    setup_fixed_camera(env)
 
-    frames = [frame]
+    frames = []
+    # print(dir(env.unwrapped.mujoco_renderer))
+    for _ in range(max_steps):
+        frame = env.render()
+        frames.append(frame)
 
-    for _ in range(max_steps - 1):
-        # ---- choose action ----
         if policy is None:
             action = env.action_space.sample()
         else:
@@ -47,11 +55,8 @@ def run_episode(env_name="Swimmer-v5", policy=None, max_steps=1000, gif_path=Non
             with torch.no_grad():
                 action_tensor = policy(obs_tensor)
             action = action_tensor.squeeze(0).cpu().numpy()
-        # -----------------------
 
         obs, reward, terminated, truncated, info = env.step(action)
-        frame = env.render()
-        frames.append(frame)
 
         if terminated or truncated:
             break
