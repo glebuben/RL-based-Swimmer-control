@@ -104,7 +104,6 @@ def step(
 
 
     if baseline is not None:
-        baseline.update(batch_returns)
         b = baseline.get()
         batch_returns = [G - b for G in batch_returns]
 
@@ -116,6 +115,7 @@ def step(
     for lp, G in zip(batch_log_probs, batch_returns):
         loss = loss + torch.sum(-lp * G) / len(batch_log_probs)
 
+    baseline.update(batch_returns)
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
@@ -134,7 +134,7 @@ def train_loop(
     num_updates:         int   = 1000,
     max_steps:           int   = 1000,
     normalise_returns:   bool  = True,
-    baseline_name: str | None = None,
+    baseline_name: str | None = "Exponential_0.1",
     checkpoint_base_dir: str   = "checkpoints",
 ) -> MetricsManager:
     """

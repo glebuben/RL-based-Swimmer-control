@@ -29,5 +29,5 @@ class ExponentialBaseline(Baseline):
 
     def get(self) -> float:
         if self.value is None:
-            raise RuntimeError("Baseline not initialized yet")
+            return 0.0
         return self.value
