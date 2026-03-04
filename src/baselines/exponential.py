@@ -1,6 +1,6 @@
 from __future__ import annotations
 from src.baselines.base import Baseline
-
+import torch
 
 class ExponentialBaseline(Baseline):
     """
@@ -14,11 +14,20 @@ class ExponentialBaseline(Baseline):
         self.alpha = alpha
         self.value: float | None = None
 
-    def update(self, batch_mean_return: float) -> None:
+    def update(self, batch_returns: list[torch.Tensor]) -> None:
+        
+         # stack → shape (batch_size, T)
+        stacked = torch.stack(batch_returns)
+
+        # mean over batch → shape (T,)
+        batch_mean = stacked.mean(dim=0)
+
         if self.value is None:
-            self.value = batch_mean_return
+            self.value = batch_mean
         else:
-            self.value = (1 - self.alpha) * self.value + self.alpha * batch_mean_return
+            self.value = (1 - self.alpha) * self.value + self.alpha * batch_mean
 
     def get(self) -> float:
-        return self.value if self.value is not None else 0.0
+        if self.value is None:
+            raise RuntimeError("Baseline not initialized yet")
+        return self.value

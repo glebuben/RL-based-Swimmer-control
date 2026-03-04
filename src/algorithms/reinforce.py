@@ -35,17 +35,17 @@ def _collect_batch(
 
     Returns
     -------
-    all_log_probs : one list of tensors per env
-    all_rewards   : one list of floats per env
+    all_log_probs : list of n_env lists of max_steps scalar tensors
+    all_rewards   : list of n_env lists of max_steps floats
     x_distances   : x displacement per env over the episode
     """
-    n_envs = envs.num_envs
+    batch_size = envs.num_envs
 
     obs, infos = envs.reset()
     x_starts = np.array(infos["x_position"])
 
-    all_log_probs = [[] for _ in range(n_envs)]
-    all_rewards   = [[] for _ in range(n_envs)]
+    all_log_probs = [[] for _ in range(batch_size)]
+    all_rewards   = [[] for _ in range(batch_size)]
 
     for _ in range(max_steps):
         obs_t  = torch.tensor(obs, dtype=torch.float32, device=device)
@@ -56,7 +56,7 @@ def _collect_batch(
             action.detach().cpu().numpy()
         )
 
-        for i in range(n_envs):
+        for i in range(batch_size):
             all_log_probs[i].append(lp[i].squeeze())
             all_rewards[i].append(float(rewards[i]))
 
@@ -102,21 +102,16 @@ def step(
         batch_log_probs.append(torch.stack(log_probs))
         batch_returns.append(torch.tensor(returns, dtype=torch.float32, device=device))
 
-    batch_mean_return = float(np.mean(episode_returns))
-    if baseline is not None:
-        baseline.update(batch_mean_return)
-        b = baseline.get()
-    else:
-        b = 0.0
 
-    # Subtract baseline from raw returns BEFORE normalisation
     if baseline is not None:
+        baseline.update(batch_returns)
+        b = baseline.get()
         batch_returns = [G - b for G in batch_returns]
 
     if normalise_returns:
         batch_returns = normalise_returns_batch(batch_returns)
 
-    # REINFORCE loss
+    # REINFORCE loss: push up log-probs of actions that led to high returns
     loss = torch.tensor(0.0, device=device)
     for lp, G in zip(batch_log_probs, batch_returns):
         loss = loss + torch.sum(-lp * G) / len(batch_log_probs)
@@ -130,7 +125,7 @@ def step(
 
 def train_loop(
     env_name:            str   = "Swimmer-v5",
-    n_envs:              int   = 16,
+    batch_size:          int   = 16,
     hidden_dim:          int   = 64,
     action_bound:        float = 1.0,
     covariance_scale:    float = 0.1,
@@ -144,13 +139,13 @@ def train_loop(
 ) -> MetricsManager:
     """
     Full training loop. Runs `num_updates` gradient steps, each collecting
-    `n_envs` episodes in parallel. Saves results via MetricsManager at the end.
+    `batch_size` episodes in parallel. Saves results via MetricsManager at the end.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     envs = AsyncVectorEnv([
         (lambda: gym.make(env_name))
-        for _ in range(n_envs)
+        for _ in range(batch_size)
     ])
 
     state_dim  = envs.single_observation_space.shape[0]
@@ -170,7 +165,7 @@ def train_loop(
     run_dir = os.path.join(checkpoint_base_dir, f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
     hyperparams: dict[str, Any] = {
-        "env_name": env_name, "n_envs": n_envs,
+        "env_name": env_name, "batch_size": batch_size,
         "hidden_dim": hidden_dim, "action_bound": action_bound,
         "covariance_scale": covariance_scale, "gamma": gamma,
         "lr": lr, "num_updates": num_updates, "max_steps": max_steps,
@@ -186,7 +181,7 @@ def train_loop(
 
     print(f"Device        : {device}")
     print(f"Environment   : {env_name}  (state_dim={state_dim}, action_dim={action_dim})")
-    print(f"Parallel envs : {n_envs}")
+    print(f"Parallel envs : {batch_size}")
     print(f"Updates       : {num_updates}")
     print(f"Run dir       : {run_dir}")
     print()
