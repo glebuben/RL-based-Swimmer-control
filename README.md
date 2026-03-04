@@ -141,11 +141,12 @@ This is an unbiased estimate of the true objective but can exhibit high variance
 
 The advantage function is defined as $A^\pi(s_t, a_t) = Q^\pi(s_t, a_t) - V^\pi(s_t)$. We estimate it as:
 
-$$A(s_t, a_t) = G_t - b$$
+$$A(s_t, a_t) = G_t - b_t$$
 
-where $G_t$ is the Monte Carlo estimate of $Q^\pi$ and $b$ is an exponential moving average of batch mean returns used as an estimate of $V^\pi$:
+where $G_t$ is the Monte Carlo estimate of $Q^\pi$ and $b_t$ is an exponential moving average of batch mean returns used as an estimate of $V^\pi$:
 
-$$b_{k+1} = (1 - \alpha)\, b_k + \alpha\, \mathbb{E}_{\tau_k}[G_0]$$
+$$b_t \leftarrow (1 - \alpha)b_t + \alpha\ \frac{1}{N} \sum_{i=1}^{N} G_t^{(i)}$$, 
+where $N$ is the batch size and $i$ is index of episode in the batch.
 
 ---
 
