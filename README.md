@@ -23,6 +23,7 @@ src/
 ├── algorithms/
 │   ├── reinforce.py        # REINFORCE training loop with optional baseline support
 │   ├── trpo.py             # TRPO training loop with pluggable advantage estimators
+│   ├── ppo.py              # PPO training loop with pluggable advantage estimators
 │   ├── conjugate_gradient.py  # Conjugate gradient solver for the Fisher-vector product system
 │   └── kl_divergence.py    # Fisher information matrix operator for KL constraint
 │
@@ -138,6 +139,20 @@ The advantage is estimated as $Q - V$, where $V$ is approximated by the same exp
 $$A(s_t, a_t) = G_t - b$$
 
 This reduces variance in the surrogate objective gradient while remaining unbiased, similar to the REINFORCE with baseline case.
+
+---
+
+### PPO 
+
+Proximal Policy Optimisation is a more practical variant of TRPO that replaces the hard KL constraint with a clipped surrogate objective. The update maximises:
+
+$$\mathcal{L}^{\text{CLIP}}(\theta) = \mathbb{E}_{s, a \sim \pi_{\theta_{\text{old}}}} \left[ \min \left( r_t(\theta) A(s, a), \; \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) A(s, a) \right) \right]$$
+
+where $r_t(\theta) = \frac{\pi_\theta(a|s)}{\pi_{\theta_{\text{old}}}(a|s)}$ is the probability ratio. The clipping prevents updates that would change the policy too much in one step, while still allowing multiple epochs of minibatch updates on the same data. 
+
+While original paper proposes using a value function approximation, we use only returns-based estimates of value function. 
+
+Also, for simplicity, we perform only one gradient update per batch of data, rather than multiple epochs of minibatch updates.
 
 ---
 
