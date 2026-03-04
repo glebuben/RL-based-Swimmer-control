@@ -46,8 +46,8 @@ src/
 ## Environment: Swimmer-v5
 
 The Swimmer is a 3-link planar robot submerged in a fluid. It has no legs — locomotion is achieved purely by undulating its body joints.
-
 ### State Space $\mathcal{S}$
+![alt text](artifacts/swimmer_legend.png)
 
 The observation vector $s_t \in \mathbb{R}^8$ contains:
 
