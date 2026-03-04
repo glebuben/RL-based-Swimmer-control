@@ -18,6 +18,10 @@ from src.utils.metrics import MetricsManager
 from src.utils.returns import compute_returns
 from src.algorithms.conjugate_gradient import solve_CG
 from src.algorithms.kl_divergence import FisherInfoOperator
+from src.utils.returns import normalise_returns_batch
+from src.advantages.base import Advantage
+from src.advantages import make_advantage
+
 from torch.distributions import kl_divergence
 
 
@@ -92,20 +96,18 @@ def _subsample_states_batch(
 
 def compute_surrogate_objective(
     batch_likelihood_ratios: list[torch.Tensor],
-    batch_returns: list[torch.Tensor],
+    batch_advantages: list[torch.Tensor],
 ) -> torch.Tensor:
     """Compute surrogate objective
 
     Inputs:
     batch_likelihood_ratios: list of n_env lists of max_steps scalar tensors
-    batch_returns: list of n_env lists of max_steps scalar tensors
+    batch_advantages: list of n_env lists of max_steps scalar tensors
     """
-
-    surrogate_objective = torch.tensor(0.0, device=batch_returns[0].device)
-    for lh_ratios, returns in zip(batch_likelihood_ratios, batch_returns):
-        surrogate_objective += (lh_ratios * returns).mean() / len(batch_returns)
-
-    return surrogate_objective
+    surrogate = torch.tensor(0.0, device=batch_advantages[0].device)
+    for lh_ratios, advantages in zip(batch_likelihood_ratios, batch_advantages):
+        surrogate = surrogate + (lh_ratios * advantages).mean() / len(batch_advantages)
+    return surrogate
 
 
 def kl_line_search(
@@ -117,7 +119,7 @@ def kl_line_search(
     old_policy: ContinuousPolicy,
     state_batch: torch.Tensor,
     batch_likelihood_ratios: torch.Tensor,
-    batch_returns: torch.Tensor,
+    batch_advantages: list[torch.Tensor],
 ):
     """Perform line search along step_direction on surrogate objective
     ensuring that KL constraint is satisfied. Updates target_policy weights in-place.
@@ -139,7 +141,7 @@ def kl_line_search(
 
             surrogate_objective = compute_surrogate_objective(
                 batch_likelihood_ratios=batch_likelihood_ratios,
-                batch_returns=batch_returns,
+                batch_advantages=batch_advantages,
             )
 
             surrogate_objective = surrogate_objective.item()
@@ -159,6 +161,7 @@ def step(
     target_policy: ContinuousPolicy,
     old_policy: ContinuousPolicy,
     delta_kl: float,
+    advantage: Advantage,
     *,
     max_steps: int,
     gamma: float,
@@ -173,10 +176,9 @@ def step(
 
     Returns
     -------
-    mean_return    : mean total reward across episodes in the batch
-    mean_x_distance: mean x displacement across episodes in the batch
+    mean_return     : mean total reward across episodes in the batch
+    mean_x_distance : mean x displacement across episodes in the batch
     """
-
     with torch.no_grad():
         old_policy.load_state_dict(target_policy.state_dict())
 
@@ -184,21 +186,24 @@ def step(
         envs, target_policy, old_policy, max_steps, device
     )
 
-    batch_returns = []
-    episode_returns = []
     batch_likelihood_ratios = []
+    batch_likelihood_ratios = [
+        torch.stack(lh_ratios) for lh_ratios in all_lh_ratios
+    ]
 
-    for lh_ratios, rewards in zip(all_lh_ratios, all_rewards):
-        returns = compute_returns(rewards, gamma)
-        episode_returns.append(sum(rewards))
-        batch_likelihood_ratios.append(torch.stack(lh_ratios))
-        batch_returns.append(torch.tensor(returns, dtype=torch.float32, device=device))
+    # compute_batch handles baseline.update() internally after computing per-episode advantages
+    batch_advantages, episode_returns = advantage.compute_batch(
+        all_rewards=all_rewards,
+        all_states=all_states,
+        gamma=gamma,
+        device=device,
+    )
 
     if normalise_returns:
-        batch_returns = normalise_returns_batch(batch_returns)
+        batch_advantages = normalise_returns_batch(batch_advantages)
 
     surrogate_objective = compute_surrogate_objective(
-        batch_likelihood_ratios, batch_returns
+        batch_likelihood_ratios, batch_advantages
     )
 
     all_states_subsampled = _subsample_states_batch(all_states, kl_subsample)
@@ -216,8 +221,7 @@ def step(
     FIM_by_step_direction = fisher_info_op(step_direction_flat)
 
     step_size = torch.sqrt(
-        2 * delta_kl / (FIM_by_step_direction.dot(step_direction_flat) + 1e-8)
-    )
+        2 * delta_kl / (FIM_by_step_direction.dot(step_direction_flat) + 1e-8))
 
     kl_line_search(
         step_direction=step_direction,
@@ -228,27 +232,28 @@ def step(
         old_policy=old_policy,
         state_batch=all_states_subsampled,
         batch_likelihood_ratios=batch_likelihood_ratios,
-        batch_returns=batch_returns,
+        batch_advantages=batch_advantages,
     )
 
     return float(np.mean(episode_returns)), float(np.mean(x_distances))
 
 
 def train_loop(
-    env_name: str = "Swimmer-v5",
-    batch_size: int = 16,
-    hidden_dim: int = 64,
-    action_bound: float = 1.0,
-    covariance_scale: float = 0.1,
-    gamma: float = 0.99,
-    delta_kl: float = 0.01,
+    env_name:                    str   = "Swimmer-v5",
+    batch_size:                  int   = 16,
+    hidden_dim:                  int   = 64,
+    action_bound:                float = 1.0,
+    covariance_scale:            float = 0.1,
+    gamma:                       float = 0.99,
+    delta_kl:                    float = 0.01,
     line_search_step_multiplier: float = 0.5,
-    kl_subsample: float = 0.1,
-    max_CG_iters: int = 10,
-    num_updates: int = 1000,
-    max_steps: int = 1000,
-    normalise_returns: bool = True,
-    checkpoint_base_dir: str = "checkpoints",
+    kl_subsample:                float = 0.1,
+    max_CG_iters:                int   = 10,
+    num_updates:                 int   = 1000,
+    max_steps:                   int   = 1000,
+    normalise_returns:           bool  = True,
+    advantage_name:              str   = "QValue",
+    checkpoint_base_dir:         str   = "checkpoints",
 ) -> MetricsManager:
     """
     Full training loop. Runs `num_updates` gradient steps, each collecting
@@ -256,14 +261,17 @@ def train_loop(
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    envs = AsyncVectorEnv([(lambda: gym.make(env_name)) for _ in range(batch_size)])
+    envs = AsyncVectorEnv([
+        (lambda: gym.make(env_name)) for _ in range(batch_size)
+    ])
 
-    state_dim = envs.single_observation_space.shape[0]
+    state_dim  = envs.single_observation_space.shape[0]
     action_dim = envs.single_action_space.shape[0]
 
     covariance = covariance_scale * torch.eye(
         action_dim, dtype=torch.float32, device=device
     )
+
     target_policy = ContinuousPolicy(
         state_dim=state_dim,
         action_dim=action_dim,
@@ -280,6 +288,10 @@ def train_loop(
         hidden_dim=hidden_dim,
     ).to(device)
 
+    advantage = make_advantage(advantage_name)
+    if advantage is None:
+        raise ValueError("TRPO requires an advantage estimator. Got None from make_advantage().")
+
     run_dir = os.path.join(
         checkpoint_base_dir, f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
@@ -289,28 +301,28 @@ def train_loop(
         "batch_size": batch_size,
         "hidden_dim": hidden_dim,
         "action_bound": action_bound,
-        "covariance_scale": covariance_scale,
+        "covariance_scale": covariance_scale, 
         "gamma": gamma,
         "delta_kl": delta_kl,
         "line_search_step_multiplier": line_search_step_multiplier,
-        "kl_subsample": kl_subsample,
+        "kl_subsample": kl_subsample, 
         "max_CG_iters": max_CG_iters,
-        "num_updates": num_updates,
+        "num_updates": num_updates, 
         "max_steps": max_steps,
         "normalise_returns": normalise_returns,
+        "advantage_name": advantage_name,
         "checkpoint_base_dir": checkpoint_base_dir,
-        "run_dir": run_dir,
+        "run_dir": run_dir, 
         "device": device.type,
     }
 
     mm = MetricsManager()
 
     print(f"Device        : {device}")
-    print(
-        f"Environment   : {env_name}  (state_dim={state_dim}, action_dim={action_dim})"
-    )
+    print(f"Environment   : {env_name}  (state_dim={state_dim}, action_dim={action_dim})")
     print(f"Parallel envs : {batch_size}")
     print(f"Updates       : {num_updates}")
+    print(f"Advantage     : {advantage_name}")
     print(f"Run dir       : {run_dir}")
     print()
 
@@ -319,10 +331,11 @@ def train_loop(
             t0 = time.time()
 
             mean_return, mean_x_dist = step(
-                envs,
-                target_policy,
-                old_policy,
-                delta_kl,
+                envs, 
+                target_policy, 
+                old_policy, 
+                delta_kl, 
+                advantage,
                 max_steps=max_steps,
                 gamma=gamma,
                 normalise_returns=normalise_returns,
@@ -334,9 +347,7 @@ def train_loop(
 
             mm.record(mean_return, mean_x_dist, target_policy)
 
-            new_best = (
-                "  *** NEW BEST ***" if mean_return >= mm.best_mean_return else ""
-            )
+            new_best = "  *** NEW BEST ***" if mean_return >= mm.best_mean_return else ""
             print(
                 f"Update {update_idx:4d} | "
                 f"MeanReturn {mean_return:+.3f} | "
@@ -352,7 +363,7 @@ def train_loop(
         try:
             envs.close()
         except BaseException:
-            pass  # workers are already dead on Windows Ctrl+C, ignore
+            pass
         mm.save(run_dir, hyperparams, target_policy)
 
     return mm

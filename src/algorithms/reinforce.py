@@ -18,7 +18,8 @@ from gymnasium.vector import AsyncVectorEnv
 from src.nn.nn_policy import ContinuousPolicy
 from src.utils.returns import compute_returns, normalise_returns_batch
 from src.utils.metrics import MetricsManager
-
+from src.baselines.base import Baseline
+from src.baselines import make_baseline
 
 def _collect_batch(
     envs: AsyncVectorEnv,
@@ -38,13 +39,13 @@ def _collect_batch(
     all_rewards   : list of n_env lists of max_steps floats
     x_distances   : x displacement per env over the episode
     """
-    n_envs = envs.num_envs
+    batch_size = envs.num_envs
 
     obs, infos = envs.reset()
     x_starts = np.array(infos["x_position"])
 
-    all_log_probs = [[] for _ in range(n_envs)]
-    all_rewards   = [[] for _ in range(n_envs)]
+    all_log_probs = [[] for _ in range(batch_size)]
+    all_rewards   = [[] for _ in range(batch_size)]
 
     for _ in range(max_steps):
         obs_t  = torch.tensor(obs, dtype=torch.float32, device=device)
@@ -55,7 +56,7 @@ def _collect_batch(
             action.detach().cpu().numpy()
         )
 
-        for i in range(n_envs):
+        for i in range(batch_size):
             all_log_probs[i].append(lp[i].squeeze())
             all_rewards[i].append(float(rewards[i]))
 
@@ -75,6 +76,7 @@ def step(
     max_steps: int,
     gamma: float,
     normalise_returns: bool,
+    baseline: Baseline | None,
     device: torch.device,
 ) -> tuple[float, float]:
     """
@@ -100,6 +102,11 @@ def step(
         batch_log_probs.append(torch.stack(log_probs))
         batch_returns.append(torch.tensor(returns, dtype=torch.float32, device=device))
 
+
+    if baseline is not None:
+        b = baseline.get()
+        batch_returns = [G - b for G in batch_returns]
+
     if normalise_returns:
         batch_returns = normalise_returns_batch(batch_returns)
 
@@ -108,6 +115,7 @@ def step(
     for lp, G in zip(batch_log_probs, batch_returns):
         loss = loss + torch.sum(-lp * G) / len(batch_log_probs)
 
+    baseline.update(batch_returns)
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
@@ -126,11 +134,12 @@ def train_loop(
     num_updates:         int   = 1000,
     max_steps:           int   = 1000,
     normalise_returns:   bool  = True,
+    baseline_name: str | None = None,
     checkpoint_base_dir: str   = "checkpoints",
 ) -> MetricsManager:
     """
     Full training loop. Runs `num_updates` gradient steps, each collecting
-    `n_envs` episodes in parallel. Saves results via MetricsManager at the end.
+    `batch_size` episodes in parallel. Saves results via MetricsManager at the end.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -163,7 +172,10 @@ def train_loop(
         "normalise_returns": normalise_returns,
         "checkpoint_base_dir": checkpoint_base_dir, "run_dir": run_dir,
         "device": device.type,
+        "baseline_name": baseline_name,
     }
+    
+    baseline = make_baseline(baseline_name)
 
     mm = MetricsManager()
 
@@ -183,6 +195,7 @@ def train_loop(
                 max_steps=max_steps,
                 gamma=gamma,
                 normalise_returns=normalise_returns,
+                baseline=baseline, 
                 device=device,
             )
 
