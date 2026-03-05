@@ -4,7 +4,10 @@ Comparison of policy gradient methods — REINFORCE and TRPO — on the MuJoCo `
 
 ---
 
-![TRPO Swimmer](artifacts/Screencast-from-05.03.2026-13_15_29.gif)
+<p align="center">
+  <img src="artifacts/gif_1.gif" width="900">
+</p>
+
 
 ## Directory Structure
 
