@@ -207,8 +207,8 @@ Both algorithms share the following parameters with identical values:
 
 ## Results and Conclusions
 
-![1 text](artifacts/photo_2026-03-04_22-44-57_(2).jpg)
-![2 text](artifacts/photo_2026-03-04_22-44-57.jpg)
+![1 text](artifacts/mean_return_groups.png)
+![2 text](artifacts/x_distance_groups.png)
 
 <p align="center">
   <img src="artifacts/gif_2.gif" width="900">
